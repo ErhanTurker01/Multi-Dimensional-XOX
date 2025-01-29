@@ -4,132 +4,124 @@
 #include <stdexcept>
 #include <format>
 #include <iostream>
+#include <type_traits>
 
 using u32 = uint32_t;
 using u8 = uint8_t;
-using std::array;
-using std::vector;
 
 namespace XOX {
 
+const u8 MAX_DEPTH = 5;
+const u8 MIN_SIZE = 3;
+
 enum class State { X, O, N, D }; /* X, O, None, Draw */
 
-template<u32 N>
+template<u32 Depth, u32 Size = 3>
 class Game {
-    friend Game<N+1>;
-protected:
-    array<array<Game<N-1>, 3>, 3> board;
-    Game<N+1>* biggerGame = nullptr;
+    static_assert(Depth <= MAX_DEPTH, "Game is too deep!");
+    static_assert(Size >= MIN_SIZE, "Game is too small!");
+    
+    friend Game<Depth+1, Size>;
+    using Type = typename std::conditional<Depth==1, State, Game<Depth-1, Size>>::type;
+    std::array<std::array<Type, Size>, Size> board;
+    Game<Depth+1, Size>* biggerGame = nullptr;
     State state = State::N;
     
 public:
-    /* Constructor */
-    Game(){
-        for(auto& row : board){
-            for(Game<N-1>& game : row){
-                game.biggerGame = this;
-            }
-        }
+    Game();
+    operator State() const;
+    typename std::array<Type, Size>& operator[](u8 i);
+    Type& element(const std::vector<u8>& indexes, size_t offset = 0);
+    void updateWinner();
+};
+
+
+template<u32 Depth, u32 Size>
+Game<Depth, Size>::operator State() const{
+    return state;
+}
+
+template<u32 Depth, u32 Size>
+Game<Depth, Size>::Game() {
+    for (auto& row : board) {
+        if constexpr (Depth == 1) row.fill(State::N);
+        else for (Game<Depth-1, Size>& game : row) game.biggerGame = this;
     }
-    
-    /* Update the winner if there is one and also update all the bigger games */
-    void updateWinner(){}
-    
-    /* [] operator */
-    array<Game<N-1>, 3>& operator[](u8 i) {
-        return board[i];
+}
+
+template<u32 Depth, u32 Size>
+typename std::array<typename Game<Depth, Size>::Type, Size>&
+Game<Depth, Size>::operator[](u8 i) {
+    return board[i];
+}
+
+template<u32 Depth, u32 Size>
+typename Game<Depth, Size>::Type&
+Game<Depth, Size>::element(const std::vector<u8>& indexes, size_t offset) {
+    if (indexes.size() - offset != Depth * 2) {
+        std::string error = std::format("Indexes size is not {} for Game<{}, {}>!", Depth * 2, Depth, Size);
+        throw std::invalid_argument(error);
     }
-    
-    /* Vector element indexing */
-    decltype(auto) element(const vector<u8>& indexes, size_t offset = 0) {
-        if (indexes.size() - offset != N * 2) {
-            std::string error = std::format("Indexes size is not {} for Game<{}>!", N * 2, N);
-            throw std::invalid_argument(error);
-        }
+
+    if constexpr (Depth == 1) {
+        return board[indexes[offset]][indexes[offset + 1]];
+    } else {
         return board[indexes[offset]][indexes[offset + 1]].element(indexes, offset + 2);
     }
-};
+}
 
-template<>
-class Game<1> {
-    friend Game<2>;
-protected:
-    array<array<State, 3>, 3> board;
-    Game<2>* biggerGame = nullptr;
-    State state = State::N;
-
-public:
-    /* Constructor */
-    Game() {
-        for (auto& row : board) {
-            row.fill(State::N);
-        }
-    }
-    
-    /* Update the winner if there is one and also update all the bigger games */
-    void updateWinner() {
-        for (int i = 0; i < 3; ++i) {
-            State first = board[i][0];
-            if (first != State::N && board[i][1] == first && board[i][2] == first) {
-                state = first;
+template<u32 Depth, u32 Size>
+void Game<Depth, Size>::updateWinner() {
+    for (int i = 0; i < Size; ++i) {
+        if (std::all_of(board[i].begin(), board[i].end(), [&](State s) { return s == board[i][0] && s != State::N; })) {
+            state = board[i][0];
+            if constexpr (Depth < MAX_DEPTH)
                 if (biggerGame) biggerGame->updateWinner();
-                return;
-            }
-        }
-
-        for (int i = 0; i < 3; ++i) {
-            State first = board[0][i];
-            if (first != State::N && board[1][i] == first && board[2][i] == first) {
-                state = first;
-                if (biggerGame) biggerGame->updateWinner();
-                return;
-            }
-        }
-
-        State first = board[0][0];
-        if (first != State::N && board[1][1] == first && board[2][2] == first) {
-            state = first;
-            if (biggerGame) biggerGame->updateWinner();
             return;
         }
-
-        first = board[0][2];
-        if (first != State::N && board[1][1] == first && board[2][0] == first) {
-            state = first;
-            if (biggerGame) biggerGame->updateWinner();
+        if (std::all_of(board.begin(), board.end(), [&](auto& row) { return row[i] == board[0][i] && row[i] != State::N; })) {
+            state = board[0][i];
+            if constexpr (Depth < MAX_DEPTH)
+                if (biggerGame) biggerGame->updateWinner();
             return;
         }
+    }
 
-        bool isDraw = true;
-        for (const auto& row : board) {
-            for (State cell : row) {
-                if (cell == State::N) {
-                    isDraw = false;
-                    break;
-                }
-            }
-            if (!isDraw) break;
+    if (std::all_of(board.begin(), board.end(), [&](auto& row) { return row[&row - board.begin()] == board[0][0] && row[&row - board.begin()] != State::N; })) {
+        state = board[0][0];
+        if constexpr (Depth < MAX_DEPTH)
+            if (biggerGame) biggerGame->updateWinner();
+        return;
+    }
+    if (std::all_of(board.begin(), board.end(), [&](auto& row) { return row[Size - 1 - (&row - board.begin())] == board[0][Size - 1] && row[Size - 1 - (&row - board.begin())] != State::N; })) {
+        state = board[0][Size - 1];
+        if constexpr (Depth < MAX_DEPTH)
+            if (biggerGame) biggerGame->updateWinner();
+        return;
+    }
+
+    for (const auto& row : board) {
+        if (std::any_of(row.begin(), row.end(), [](State s) { return s == State::N; })) {
+            state = State::N;
+            return;
         }
-
-        state = isDraw ? State::D : State::N;
-    }
-
-    
-    /* [] operator */
-    array<State, 3>& operator[](u8 i) {
-        return board[i];
     }
     
-    /* Vector element indexing */
-    State& element(const vector<u8>& indexes, size_t offset = 0) {
-        if (indexes.size() - offset != 2) {
-            throw std::invalid_argument("Indexes size is not 2 for Game<1>!");
-        }
-        return board[indexes[offset]][indexes[offset + 1]];
-    }
-};
+    state = State::D;
+    if constexpr (Depth < MAX_DEPTH)
+        if (biggerGame) biggerGame->updateWinner();
+}
 
-/* State print */
-std::ostream& operator<<(std::ostream& os, State state);
+
+std::ostream& operator<<(std::ostream& os, State state) {
+    switch (state) {
+        case State::X: os << "X"; break;
+        case State::O: os << "O"; break;
+        case State::N: os << "None"; break;
+        case State::D: os << "Draw"; break;
+        default: os << "Unknown"; break;
+    }
+    return os;
+}
 
 }
