@@ -5,113 +5,142 @@
 #include <format>
 #include <iostream>
 #include <type_traits>
+#include <cstdint>
+#include <algorithm>
+#include <initializer_list>
+#include <utility>
 
-using u32 = uint32_t;
-using u8 = uint8_t;
+using std::size_t;
 
 namespace XOX {
 
-const u8 MAX_DEPTH = 5;
-const u8 MIN_SIZE = 3;
+// Constants and allowed ranges.
+const size_t MAX_DEPTH = 5;
+const size_t MIN_SIZE  = 3;
+const size_t MAX_DIM   = 4;
+const size_t MIN_DIM   = 2;
 
-enum class State { X, O, N, D }; /* X, O, None, Draw */
+enum class State { X, O, N, D };  // X, O, None, Draw
 
-template<u32 Depth, u32 Size = 3>
+template<typename T, size_t N, size_t Size>
+class NArray {
+public:
+    using type = std::array<typename NArray<T, N-1, Size>::type, Size>;
+};
+
+template<typename T, size_t Size>
+class NArray<T, 1, Size> {
+public:
+    using type = std::array<T, Size>;
+};
+
+template<typename Container, typename Index, typename... Indices>
+decltype(auto) getElement(Container& container, Index idx, Indices... indices) {
+    if constexpr (sizeof...(indices) == 0) {
+        return container[idx];
+    } else {
+        return getElement(container[idx], indices...);
+    }
+}
+
+template<size_t Depth, size_t Dimension, size_t Size>
 class Game {
     static_assert(Depth <= MAX_DEPTH, "Game is too deep!");
     static_assert(Size >= MIN_SIZE, "Game is too small!");
+    static_assert(Dimension >= MIN_DIM, "Game is too small!");
+    static_assert(Dimension <= MAX_DIM, "Game is too big!");
     
-    friend Game<Depth+1, Size>;
-    using Type = typename std::conditional<Depth==1, State, Game<Depth-1, Size>>::type;
-    std::array<std::array<Type, Size>, Size> board;
-    Game<Depth+1, Size>* biggerGame = nullptr;
+    friend Game<Depth+1, Dimension, Size>;
+    
+public:
+    using stateType = typename std::conditional<Depth == 1, State, Game<Depth-1, Dimension, Size>>::type;
+    using boardType = typename NArray<stateType, Dimension, Size>::type;
+    
+private:
+    boardType board;
+    Game<Depth+1, Dimension, Size>* biggerGame = nullptr;
     State state = State::N;
+
+    template<typename T>
+    void initialize(T& container);
+    
+    template<std::size_t N, std::size_t... I>
+    auto& element_imp(const std::array<size_t, N>& idx, std::index_sequence<I...>);
     
 public:
     Game();
     operator State() const;
-    typename std::array<Type, Size>& operator[](u8 i);
-    Type& element(const std::vector<u8>& indexes, size_t offset = 0);
+    auto& operator[](size_t i);
+    
+    auto& element(std::initializer_list<size_t> indices);
+    
     void updateWinner();
 };
 
+template<size_t Depth, size_t Size>
+class Game<Depth, 1, Size> {
+public:
+    using stateType = typename std::conditional<Depth == 1, State, Game<Depth-1, 1, Size>>::type;
+    using boardType = std::array<stateType, Size>;
+};
 
-template<u32 Depth, u32 Size>
-Game<Depth, Size>::operator State() const{
+template<size_t Depth, size_t Dimension, size_t Size>
+Game<Depth, Dimension, Size>::operator State() const {
     return state;
 }
 
-template<u32 Depth, u32 Size>
-Game<Depth, Size>::Game() {
-    for (auto& row : board) {
-        if constexpr (Depth == 1) row.fill(State::N);
-        else for (Game<Depth-1, Size>& game : row) game.biggerGame = this;
+template<size_t Depth, size_t Dimension, size_t Size>
+Game<Depth, Dimension, Size>::Game() {
+    initialize(board);
+}
+
+template <typename T>
+concept Iterable = requires(T t) {
+    t.begin();
+    t.end();
+};
+
+template<size_t Depth, size_t Dimension, size_t Size>
+template<typename T>
+void Game<Depth, Dimension, Size>::initialize(T &container) {
+    if constexpr (Iterable<T>) {
+        for (auto &sub : container)
+            initialize(sub);
+    } else if constexpr (std::is_same_v<T, State>) {
+        container = State::N;
+    } else {
+        container.state = State::N;
     }
 }
 
-template<u32 Depth, u32 Size>
-typename std::array<typename Game<Depth, Size>::Type, Size>&
-Game<Depth, Size>::operator[](u8 i) {
+template<size_t Depth, size_t Dimension, size_t Size>
+auto& Game<Depth, Dimension, Size>::operator[](size_t i) {
     return board[i];
 }
 
-template<u32 Depth, u32 Size>
-typename Game<Depth, Size>::Type&
-Game<Depth, Size>::element(const std::vector<u8>& indexes, size_t offset) {
-    if (indexes.size() - offset != Depth * 2) {
-        std::string error = std::format("Indexes size is not {} for Game<{}, {}>!", Depth * 2, Depth, Size);
-        throw std::invalid_argument(error);
-    }
-
-    if constexpr (Depth == 1) {
-        return board[indexes[offset]][indexes[offset + 1]];
-    } else {
-        return board[indexes[offset]][indexes[offset + 1]].element(indexes, offset + 2);
-    }
-}
-
-template<u32 Depth, u32 Size>
-void Game<Depth, Size>::updateWinner() {
-    for (int i = 0; i < Size; ++i) {
-        if (std::all_of(board[i].begin(), board[i].end(), [&](State s) { return s == board[i][0] && s != State::N; })) {
-            state = board[i][0];
-            if constexpr (Depth < MAX_DEPTH)
-                if (biggerGame) biggerGame->updateWinner();
-            return;
-        }
-        if (std::all_of(board.begin(), board.end(), [&](auto& row) { return row[i] == board[0][i] && row[i] != State::N; })) {
-            state = board[0][i];
-            if constexpr (Depth < MAX_DEPTH)
-                if (biggerGame) biggerGame->updateWinner();
-            return;
-        }
-    }
-
-    if (std::all_of(board.begin(), board.end(), [&](auto& row) { return row[&row - board.begin()] == board[0][0] && row[&row - board.begin()] != State::N; })) {
-        state = board[0][0];
-        if constexpr (Depth < MAX_DEPTH)
-            if (biggerGame) biggerGame->updateWinner();
-        return;
-    }
-    if (std::all_of(board.begin(), board.end(), [&](auto& row) { return row[Size - 1 - (&row - board.begin())] == board[0][Size - 1] && row[Size - 1 - (&row - board.begin())] != State::N; })) {
-        state = board[0][Size - 1];
-        if constexpr (Depth < MAX_DEPTH)
-            if (biggerGame) biggerGame->updateWinner();
-        return;
-    }
-
-    for (const auto& row : board) {
-        if (std::any_of(row.begin(), row.end(), [](State s) { return s == State::N; })) {
-            state = State::N;
-            return;
-        }
-    }
+template<size_t Depth, size_t Dimension, size_t Size>
+void Game<Depth, Dimension, Size>::updateWinner() {
     
-    state = State::D;
-    if constexpr (Depth < MAX_DEPTH)
-        if (biggerGame) biggerGame->updateWinner();
 }
 
+template<size_t Depth, size_t Dimension, size_t Size>
+auto& Game<Depth, Dimension, Size>::element(std::initializer_list<size_t> indices) {
+    constexpr size_t expected = Depth * Dimension;
+    if (indices.size() != expected) {
+        throw std::invalid_argument(
+            std::format("Expected {} indices, got {}", expected, indices.size())
+        );
+    }
+    std::array<size_t, expected> idx;
+    std::copy(indices.begin(), indices.end(), idx.begin());
+    return element_imp(idx, std::make_index_sequence<expected>{});
+}
+
+template<size_t Depth, size_t Dimension, size_t Size>
+template<std::size_t N, std::size_t... I>
+auto& Game<Depth, Dimension, Size>::element_imp(const std::array<size_t, N>& idx, std::index_sequence<I...>) {
+    return getElement(board, idx[I]...);
+}
 
 std::ostream& operator<<(std::ostream& os, State state) {
     switch (state) {
